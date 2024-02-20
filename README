@@ -1,0 +1,114 @@
+DOBRE EMILIA ILIANA 323 CB
+
+
+---
+FLOW PROGRAM
+---
+
+
+Buf contine informatiile despre pachetul ce trebuie trimis in functie de protocoalele encapsulate. 
+Pachetul contine headerele: [ETHERNET HEADER] [ARP HEADER / IPV4 HEADER] [ICMP (optional)]
+
+Headerul de enthernet are un camp care retine tipul pachetului pentru a identifica protocolul folosit. Am 2 cazuri: IPV4 sau ARP
+
+
+-------------------PACHET IPV4-------------------:
+
+1) Mai intai, la primirea pachetului se verifica corectitudinea sa dupa checksumul retinul in headerul IP
+
+2) Pachetul trebuie sa aiba time to live > 1 pentru a se continua transimterea sa, astfel ajuns in punctul acesta ttl ul pachetului scade cu 1 si se modifica checksumul in pachet
+
+3) Pachetul este corect si actualizat si trebuie sa ajunga la destinatia sa retinuta in campul ip headerului. Pentru acest lucru trebuie sa gaseasca cea mai buna ruta prin Longest Prefix Match care va cauta match-ul adresei destinatie in routing table.
+
+    ->> Routing table ul este o structura in care fiecare intrare are urmatoarea semnificatie: ip-ul ce contine prefixul din structura se gaseste la ip-ul next-hop care se afla pe interfata din structura, masca reprezinta pe cati biti este reprezentat prefixul 
+
+    ->> LPM este implementat cu binary search pentru routing table-ul sortat crescator si rapid cu qsort (crescator dupa match si apoi prefix)
+
+    ->> Datele din routing table se afla in network order si la ordonarea tabelului si LPM lucrez in host order => folosesc ntohl
+
+    ->> LPM: 
+            -intoarce intrarea in routing table pentru cea mai buna ruta unde se va redirectiona pachetul
+
+            -conditia pentru a avea o ruta valida este ca prefixul curent sa fie rezultatul dintre "si" pe biti intre destinatia vruta si masca curenta
+
+            -exista mai multe rute posibile, dar pentru ca vectorul este ordonat crescator urlima ruta, cea mai lunga, va fi rezultatul final
+
+4) Cea mai buna ruta este aflata acum si este o intrare in tabela de rutare ce contine interfata urmatoare si next_hopul. Am adresa ip urmatoare best_route_>next-hop si am nevoie de adresa mac corespunzatoare. 
+
+5) Adresa MAC a next hopului: 
+
+        -> se cauta  in tabelul  pentru un corespondent cu functia de get_arp_entry. Functia cauta liniar intr-un tabel dupa ip-ul destinatie cerut si intoarce intrarea lui in tabel
+
+        -> daca nu se gaseste intrarea in tabel se salveaza pachetul pentru mai tarziu* <=> se adauga in coada de pachete in asteptare si se face un ARP request
+
+        -> structura packet info  retine lungimea pachetului, pachetul actual, si interfata celei mai bune rute gasite
+
+6) Adresa mac gasita devine noua adresa a sursei, o copiez cu memcpy si get_interface mac pentru actualizarea acesteia in pachet. 
+
+7) In final trimit pachetul catre linkul urmator cu functia de send_to_link pe interfata corespunzatoare celei mai bune rute gasite.
+
+
+
+-------------PACHET ARP-------------------:
+
+    1) Pachetul primit este de tip arp request: 
+    
+        - asta inseamna ca trebuie sa dau raspuns cu adresa MAC a pachetului curent
+                => raspunsul se da prin functia de reply_ARP
+
+        - nodul de retea A a trimis broadcast pachet ARP request pentru a afla adresa MAC a best route ului sau si a ajuns la nodul de retea B - pachetul fiind buf 
+
+        -B trebuie sa trimita raspuns inapoi la sursa sa A cu un nou pachet care se genereaza din informatiile pachetului interceptat buf
+
+
+
+
+    2)Pachetul primit este de tip ARP reply:
+
+        -se adauga o intrare noua in tabelul arp 
+        -intrarea este reprezentata de: ip - mac care se gasesc in headerul arp al pachetului fiind sha - spa
+
+        -pachetul se scoate din coada
+        
+        -se trimit prin send_to_link doar acele pachete pentru care adresa urmatorului hop este cunoscuta ceea ce inseamna ca verific daca exista intrare in tabelul arp pentur next hop
+
+
+        -celelalte pachete raman in coada de asteptare
+
+
+
+
+-----------FUNCTII ARP-------------------:
+
+build_ARP_packet: 
+        -se creeaaza o strucuta de ethernet header:[0XFF][source_mac][ARP type] 
+
+        -se creeza o structura de arp header 
+
+        -se initilizeaza pachetul cu cele 2 headere in ordine: ETH|ARP
+
+
+ARP_request: 
+    
+        -functia primeste ruta best_route afalata prin LPM pentru care vrea sa gaseasca un MAC address corespunzator.
+            
+        -pentru un request BROADCAST: se seteaza destinatia_mac ca fiind cea de broadcast, destinatia_ip este ip-ul dat de best_route 
+
+        -sursa de la care trimit are mac addressul stiut si aflat prin functia get_interface_mac, si ip-ul prin get_interfcae ip - rezultat castat cu inet_addr pt type ul corect
+
+        -avand informatiile necesare se construieste un pachet prin functia de build
+
+        -pachetul trebuie sa fie de tip request deci trimit parametrul type-ului = 1 in network order
+
+        -dupa ce pachetul este creat il trimit pe interfata next hopului stiut din informatia pachetului care face requestul
+
+
+reply_ARP: 
+  
+        -creeaza un pachet ARP cu op reply si campurile modificate din headerul ETHERNET si ARP 
+
+        *ip destinatia = ip ul senderului care voia sa stie mac addresul pachetului buf (acesta se gaseste in headerul arp)
+        *ip sursa = fostul ip destinatie 
+
+        -pachetul de reply trebuie trimis urmand sa fie interceptat si analizat 
+
